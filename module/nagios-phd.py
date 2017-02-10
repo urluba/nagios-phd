@@ -6,6 +6,7 @@ from __future__ import unicode_literals
 import begin
 import json
 import logging
+import botocore
 import boto3
 
 NAGIOS_STATUS_OK = 0
@@ -17,76 +18,72 @@ def _init_aws_session(boto_profile='int'):
     # Let's go
     try:
         session = boto3.Session(profile_name=boto_profile)
-    except ProfileNotFound as e:
+    except botocore.exceptions.ProfileNotFound as e:
         logging.error(e)
         raise SystemExit, 1
 
     return session
 
 def _this_is_the_end(error_code=NAGIOS_STATUS_UNKNOWN, output=u"I know nothing"):
-  logging.debug("+ All done, I quit! (with %s)" % error_code)
-  print output
-  raise SystemExit(error_code)
+    logging.debug("+ All done, I quit! (with %s)" % error_code)
+    print output
+    raise SystemExit(error_code)
 
 @begin.start
 @begin.logging
-def run(warning=1, critical=0, username="int", Hostname='eu-west-1', loglvl='ERROR'):
-  "Query AWS Personal Health Dashboard for any open events"
+def run(warning=1, critical=0, username="int", hostname='eu-west-1', loglvl='ERROR'):
+    "Query AWS Personal Health Dashboard for any open events"
 
-  logging.debug("---------------------------------------------------------")
-  logging.debug("+ C'est parti")
+    # TODO fix command lines arg to be respectful of NAGIOS standards
 
-  module_output = "Blackhole..."
-  module_return_code = NAGIOS_STATUS_UNKNOWN
+    logging.debug("---------------------------------------------------------")
+    logging.debug("+ C'est parti")
 
-  logging.debug( "+ Using profile %s" % username)
-  session = _init_aws_session(username)
-  client = session.client('health', 'us-east-1') # Only entrypoint for now
+    module_output = "Blackhole..."
+    module_return_code = NAGIOS_STATUS_UNKNOWN
 
-  filters = {
-    'regions': [Hostname],
-    'eventStatusCodes': ['open'],
-  }
-  logging.debug('+ Filters: %s' % filters)
+    logging.debug( "+ Using profile %s" % username)
+    session = _init_aws_session(username)
+    client = session.client('health', 'us-east-1') # Only entrypoint for now
 
-  try:
-    '''response = client.describe_event_aggregates(
-                  aggregateField = 'eventTypeCategory',
-                  filter = filters,
-            
-                )'''
+    filters = {
+        'regions': [hostname],
+        'eventStatusCodes': ['open', 'upcoming'],
+    }
+    logging.debug('+ Filters: %s' % filters)
 
-    response = client.describe_events(
-      filter = filters,
-    )
-  except "AccessDeniedException":
-    logging.error('Profile % is not authorized' % username)
-    _this_is_the_end(NAGIOS_STATUS_UNKNOWN, "Unable to query AWS Health")
+    try:
+        response = client.describe_events(
+            filter=filters,
+        )
+    except botocore.exceptions.ClientError as e:
+        logging.error(e)
+        _this_is_the_end(NAGIOS_STATUS_UNKNOWN, "Unable to query AWS Health")
 
-  number_events = len(response['events'])
-  logging.debug('+ %s event(s) matched filters' % number_events)
+    number_events = len(response['events'])
+    logging.debug('+ %s event(s) matched filters' % number_events)
 
-  if number_events == 0:
-    logging.debug('+ Pas un probleme')
-    _this_is_the_end(NAGIOS_STATUS_OK, "So far so good |0")
+    if number_events == 0:
+        logging.debug('+ Pas un probleme')
+        _this_is_the_end(NAGIOS_STATUS_OK, "So far so good |0")
 
-  if warning and number_events >= warning:
-    module_return_code = NAGIOS_STATUS_WARNING
-    logging.debug('+ Warning will be returned as above specified threshold'
-     ' of %s' % warning)
+    if warning and number_events >= warning:
+        module_return_code = NAGIOS_STATUS_WARNING
+        logging.debug('+ Warning will be returned as above specified threshold'
+            ' of %s' % warning)
 
-  if critical and number_events >= critical:
-    module_return_code = NAGIOS_STATUS_CRITICAL
-    logging.debug('+ Critical will be returned as above specified threshold'
-      ' of %s' % critical)
+    if critical and number_events >= critical:
+        module_return_code = NAGIOS_STATUS_CRITICAL
+        logging.debug('+ Critical will be returned as above specified threshold'
+            ' of %s' % critical)
 
-  module_output = u"%s incident(s) en cours |%s\n" % (number_events, number_events)
+    module_output = u"%s incident(s)|%s\n" % (number_events, number_events)
 
-  for event in response['events']:
-    module_output += u"%s is an %s on %s\n" % (
-      event.get("arn"),
-      event.get("eventTypeCategory"),
-      event.get("service"),
-    )
+    for event in response['events']:
+        module_output += u"%s is an %s on %s\n" % (
+            event.get("arn"),
+            event.get("eventTypeCategory"),
+            event.get("service"),
+        )
 
-  _this_is_the_end(module_return_code, module_output)
+    _this_is_the_end(module_return_code, module_output)
